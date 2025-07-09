@@ -1,5 +1,10 @@
 package aptosstream
 
+// Default filter behavior: nil or empty filters match all transactions or events.
+// - Logical filters (And, Or) with no entries return true.
+// - Pointer-based filters with nil fields impose no criteria and accept all.
+// - Filters with nil sub-filters are treated as no-op (match all).
+
 import (
 	"strings"
 
@@ -19,13 +24,13 @@ const (
 	TransactionTypeBlockEpilogue = 21
 )
 
-type booleanTransactionFilter interface {
+type txnFilter interface {
 	match(*transaction.Transaction) bool
 }
 
 // ----------------------------- Logical Filters -----------------------------
 type Not struct {
-	Filter booleanTransactionFilter
+	Filter txnFilter
 }
 
 func (n *Not) match(tx *transaction.Transaction) bool {
@@ -33,9 +38,10 @@ func (n *Not) match(tx *transaction.Transaction) bool {
 }
 
 type And struct {
-	Filters []booleanTransactionFilter
+	Filters []txnFilter
 }
 
+// if Filters is empty, it will return true
 func (a *And) match(tx *transaction.Transaction) bool {
 	for _, filter := range a.Filters {
 		if !filter.match(tx) {
@@ -46,16 +52,17 @@ func (a *And) match(tx *transaction.Transaction) bool {
 }
 
 type Or struct {
-	Filters []booleanTransactionFilter
+	Filters []txnFilter
 }
 
+// if Filters is empty, it will return true
 func (o *Or) match(tx *transaction.Transaction) bool {
 	for _, filter := range o.Filters {
 		if filter.match(tx) {
 			return true
 		}
 	}
-	return false
+	return len(o.Filters) == 0
 }
 
 // ----------------------------- Transaction Root Filter -----------------------------
@@ -136,7 +143,9 @@ func (e *EntryFunctionFilter) match(payload *transaction.EntryFunctionPayload) b
 
 // ----------------------------- Event Filter -----------------------------
 type EventFilter struct {
-	StructType          *MoveStructTagFilter
+	StructType *MoveStructTagFilter
+	// since filtering substring is expensive,
+	// we only filter DataSubstringFilter if StructType is not nil
 	DataSubstringFilter *string
 }
 
@@ -147,25 +156,21 @@ func (e *EventFilter) match(tx *transaction.Transaction) bool {
 		// event filter is not applicable to non-user transactions
 		return false
 	}
-	if e.StructType != nil {
-		for _, event := range userTransaction.GetEvents() {
+
+	// no filters means accept all events
+	if e.StructType == nil && e.DataSubstringFilter == nil {
+		return true
+	}
+
+	for _, event := range userTransaction.GetEvents() {
+		if e.StructType != nil {
 			if e.StructType.match(event.GetType().GetStruct()) {
-				return true
+				return (e.DataSubstringFilter == nil || strings.Contains(event.GetData(), *e.DataSubstringFilter))
 			}
 		}
-		return false
 	}
 
-	if e.DataSubstringFilter != nil {
-		for _, event := range userTransaction.GetEvents() {
-			if strings.Contains(event.GetData(), *e.DataSubstringFilter) {
-				return true
-			}
-		}
-		return false
-	}
-
-	return true
+	return false
 }
 
 type MoveStructTagFilter struct {

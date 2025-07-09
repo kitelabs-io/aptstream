@@ -3,6 +3,8 @@ package aptosstream
 import (
 	"context"
 
+	"log"
+
 	v1 "github.com/kitelabs-io/aptstream/grpc/aptos/indexer/v1"
 	transaction "github.com/kitelabs-io/aptstream/grpc/aptos/transaction/v1"
 	"google.golang.org/grpc"
@@ -14,8 +16,8 @@ type TransactionFilter struct {
 	// if FromVersion is not nil, it will start from the version specified
 	FromVersion *uint64
 
-	// if TransactionFilter is nil, it will return all transactions
-	Filter booleanTransactionFilter
+	// if Filter is nil, it will return all transactions
+	Filter txnFilter
 }
 
 var (
@@ -25,7 +27,7 @@ var (
 
 type Client struct {
 	aptosRawDataClient v1.RawDataClient
-	outGoingHeader     metadata.MD
+	outgoingHeader     metadata.MD
 	// number of transactions to return in each stream
 	// if TransactionsCount is nil, it will return an infinite stream of transactions
 	transactionsCount *uint64
@@ -71,8 +73,8 @@ func (c *Client) applyOpts(opts ...opt) {
 }
 
 func (c *Client) GetTransaction(ctx context.Context, filter TransactionFilter) (chan *transaction.Transaction, error) {
-	if c.outGoingHeader != nil {
-		ctx = metadata.NewOutgoingContext(ctx, c.outGoingHeader)
+	if c.outgoingHeader != nil {
+		ctx = metadata.NewOutgoingContext(ctx, c.outgoingHeader)
 	}
 
 	result := make(chan *transaction.Transaction, c.bufferSize)
@@ -99,19 +101,21 @@ func (c *Client) GetTransaction(ctx context.Context, filter TransactionFilter) (
 	go func() {
 		defer close(result)
 		for {
-			select {
-			case <-ctx.Done():
+			txns, err := stream.Recv()
+			if err != nil {
+				log.Printf("error receiving transactions: %v", err)
 				return
-			default:
-				txns, err := stream.Recv()
-				if err != nil {
-					return
+			}
+			var receivedVersion uint64
+			for _, tx := range txns.Transactions {
+				if filter.Filter == nil || filter.Filter.match(tx) {
+					result <- tx
 				}
-				for _, tx := range txns.Transactions {
-					if filter.Filter.match(tx) {
-						result <- tx
-					}
-				}
+				receivedVersion = tx.GetVersion()
+			}
+			if err := c.versionTracker.SetVersion(receivedVersion); err != nil {
+				log.Printf("error setting version: %v", err)
+				return
 			}
 		}
 	}()
@@ -123,7 +127,7 @@ type opt func(*Client)
 
 func WithApiKey(apiKey string) opt {
 	return func(c *Client) {
-		c.outGoingHeader = metadata.MD{
+		c.outgoingHeader = metadata.MD{
 			"authorization": {"Bearer " + apiKey},
 		}
 	}
@@ -138,7 +142,11 @@ func WithVersionTracker(versionTracker VersionTracker) opt {
 // if transactionsCount is 0, it will return an infinite stream of transactions.
 func WithTransactionsCount(transactionsCount uint64) opt {
 	return func(c *Client) {
-		c.transactionsCount = &transactionsCount
+		if transactionsCount == 0 {
+			c.transactionsCount = nil
+		} else {
+			c.transactionsCount = &transactionsCount
+		}
 	}
 }
 
