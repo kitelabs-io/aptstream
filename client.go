@@ -13,6 +13,16 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+type CommitStrategy int
+
+const (
+	// AutoCommit automatically commits the transaction version before it is returned from Get().
+	// This is the default strategy.
+	AutoCommit CommitStrategy = iota
+	// ManualCommit requires the user to explicitly call Commit() on a transaction.
+	ManualCommit
+)
+
 type TransactionFilter struct {
 	// if FromVersion is nil and versionTracker.GetVersion() == 0, it will start from the latest version
 	// if FromVersion is not nil, it will start from the version specified
@@ -45,6 +55,10 @@ type Client struct {
 	// versionTracker is used to get the latest tracked version
 	// in case consume from the latest version, versionTracker.GetVersion() must return 0
 	versionTracker VersionTracker
+
+	// commitStrategy determines how transaction versions are committed.
+	// The default is AutoCommit.
+	commitStrategy CommitStrategy
 
 	logger *zerolog.Logger
 }
@@ -85,28 +99,62 @@ func (c *Client) applyOpts(opts ...opt) {
 // Use Get() to retrieve the next *transaction.Transaction or an error (io.EOF indicates end of stream).
 // Call Close() to cancel the stream; subsequent Get() calls will return the context error.
 type TransactionStream struct {
-	txCh   <-chan *transaction.Transaction
+	txCh   <-chan *CommittableTransaction
 	errCh  <-chan error
 	cancel context.CancelFunc
+	client *Client
+}
+
+// CommittableTransaction wraps a transaction with a Commit method to acknowledge its processing.
+type CommittableTransaction struct {
+	Transaction *transaction.Transaction
+	committed   bool
+	commitFn    func(version uint64) error
+}
+
+// Commit informs the VersionTracker that the transaction has been successfully processed.
+// It is safe to call multiple times.
+func (c *CommittableTransaction) Commit() error {
+	if c.committed {
+		return nil
+	}
+	err := c.commitFn(c.Transaction.GetVersion())
+	if err == nil {
+		c.committed = true
+	}
+	return err
 }
 
 // Get returns the next transaction or an error. io.EOF indicates normal completion.
 // If the stream was canceled via Close(), Get returns the context error (context.Canceled).
-func (s *TransactionStream) Get() (*transaction.Transaction, error) {
-	select {
-	case tx, ok := <-s.txCh:
-		if ok {
-			return tx, nil
-		}
-		// txCh closed: read final error
+func (s *TransactionStream) Get() (*CommittableTransaction, error) {
+	// Block and read only from the transaction channel.
+	tx, ok := <-s.txCh
+	if !ok {
+		// The channel is closed. This is the ONLY time we check for a terminal error.
+		// This read will not block because the producer guarantees to send an error
+		// or nil before it finishes.
 		err := <-s.errCh
-		if err != nil {
-			return nil, err
+		if err == nil {
+			return nil, io.EOF // Clean shutdown
 		}
-		return nil, io.EOF
-	case err := <-s.errCh:
 		return nil, err
 	}
+
+	// If we got a transaction, process it.
+	if s.client.commitStrategy == AutoCommit {
+		// In AutoCommit mode, we commit *before* handing the transaction to the user.
+		// This provides at-least-once semantics. If the client crashes after
+		// receiving but before processing, the transaction will be re-sent on restart.
+		if err := tx.Commit(); err != nil {
+			// A commit failure is critical. We log it and forward the error to the user.
+			s.client.logger.Error().Err(err).Msg("auto-commit failed")
+			// Return both the transaction and the commit error. The user might still
+			// want to process the transaction data.
+			return tx, err
+		}
+	}
+	return tx, nil
 }
 
 // Close cancels the underlying stream context. Pending or future Get() calls will return the context error.
@@ -114,21 +162,27 @@ func (s *TransactionStream) Close() {
 	s.cancel()
 }
 
-// GetTransactionStream starts fetching transactions matching the provided filter and returns a TransactionStream.
+// GetTransactionStream starts fetching transactions and returns a TransactionStream.
 //
-// IMPORTANT: This function uses the provided VersionTracker to determine the starting version for the stream.
-// However, it does NOT automatically update the version tracker as transactions are received.
-// It is the caller's responsibility to process transactions and then call versionTracker.SetVersion()
-// to ensure at-least-once processing semantics and prevent data loss on client restart.
+// The client can be configured with two commit strategies using WithCommitStrategy():
+//   - AutoCommit (default): The stream automatically calls Commit() on a transaction *before* it is
+//     returned by Get(). This is convenient but has slightly weaker guarantees. If the
+//     client crashes after Get() returns but before processing is complete, the transaction
+//     may be skipped on restart.
+//   - ManualCommit: The caller is responsible for calling Commit() on each
+//     received CommittableTransaction. This provides stronger "at-least-once" processing guarantees.
+//     The VersionTracker is only updated when Commit() is called, ensuring that if the
+//     client restarts, it will resume from the last explicitly committed transaction.
 //
-// Use Get() to receive transactions and errors, and Close() to cancel the stream at any time.
+// It is crucial to handle the returned error from Get(), which may indicate a stream
+// failure or a commit failure in AutoCommit mode.
 func (c *Client) GetTransactionStream(ctx context.Context, filter TransactionFilter) (*TransactionStream, error) {
 	if c.outgoingHeader != nil {
 		ctx = metadata.NewOutgoingContext(ctx, c.outgoingHeader)
 	}
 	// Create cancellable context for the stream
 	ctx, cancel := context.WithCancel(ctx)
-	txCh := make(chan *transaction.Transaction, c.bufferSize)
+	txCh := make(chan *CommittableTransaction, c.bufferSize)
 	errCh := make(chan error, 1)
 
 	// Initialize FromVersion if not set
@@ -155,33 +209,46 @@ func (c *Client) GetTransactionStream(ctx context.Context, filter TransactionFil
 	}
 
 	go func() {
-		defer close(txCh)
-		defer close(errCh)
+		var finalErr error
+	mainLoop:
 		for {
 			txns, err := stream.Recv()
 			if err != nil {
-				if err == io.EOF {
-					errCh <- nil
-				} else {
-					errCh <- err
-				}
-				return
+				finalErr = err
+				break mainLoop
 			}
 
 			for _, tx := range txns.Transactions {
 				if filter.Filter == nil || filter.Filter.match(tx) {
+					committableTx := &CommittableTransaction{
+						Transaction: tx,
+						commitFn:    c.versionTracker.SetVersion,
+					}
 					select {
-					case txCh <- tx:
+					case txCh <- committableTx:
 					case <-ctx.Done():
-						errCh <- ctx.Err()
-						return
+						finalErr = ctx.Err()
+						break mainLoop
 					}
 				}
 			}
 		}
+
+		// After the producer loop exits, we must close the transaction channel
+		// to signal to the consumer that no more items are coming.
+		close(txCh)
+
+		// Then, we send the final error status. This is read by the consumer
+		// only after it has drained the transaction channel.
+		if finalErr != io.EOF {
+			errCh <- finalErr
+		} else {
+			errCh <- nil // Clean EOF
+		}
+		close(errCh)
 	}()
 
-	return &TransactionStream{txCh: txCh, errCh: errCh, cancel: cancel}, nil
+	return &TransactionStream{txCh: txCh, errCh: errCh, cancel: cancel, client: c}, nil
 }
 
 type opt func(*Client)
@@ -221,6 +288,12 @@ func WithBatchSize(batchSize uint64) opt {
 func WithBufferSize(bufferSize uint64) opt {
 	return func(c *Client) {
 		c.bufferSize = bufferSize
+	}
+}
+
+func WithCommitStrategy(strategy CommitStrategy) opt {
+	return func(c *Client) {
+		c.commitStrategy = strategy
 	}
 }
 

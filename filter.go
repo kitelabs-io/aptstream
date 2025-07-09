@@ -147,6 +147,8 @@ type EventFilter struct {
 	DataSubstringFilter *string
 }
 
+// match returns true if any of the events in the transaction match the filter criteria.
+// If both StructType and DataSubstringFilter are nil, it matches any transaction that has at least one event.
 func (e *EventFilter) match(tx *transaction.Transaction) bool {
 	userTransaction := tx.GetUser()
 	if userTransaction == nil {
