@@ -1,0 +1,9 @@
+proto_outdir = "./grpc"
+
+[[dependencies]]
+  target = "github.com/aptos-labs/aptos-core/protos/proto/aptos"
+  subgroup = ""
+  revision = "1291b25e155592cb5c16c450e1c796c8131093af"
+  branch = "master"
+  path = "aptos"
+  protocol = "https"
