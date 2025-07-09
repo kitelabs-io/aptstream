@@ -3,10 +3,12 @@ package aptosstream
 import (
 	"context"
 
-	"log"
+	"io"
 
 	v1 "github.com/kitelabs-io/aptstream/grpc/aptos/indexer/v1"
 	transaction "github.com/kitelabs-io/aptstream/grpc/aptos/transaction/v1"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -43,6 +45,8 @@ type Client struct {
 	// versionTracker is used to get the latest tracked version
 	// in case consume from the latest version, versionTracker.GetVersion() must return 0
 	versionTracker VersionTracker
+
+	logger *zerolog.Logger
 }
 
 func NewClient(cc grpc.ClientConnInterface, opts ...opt) *Client {
@@ -70,18 +74,68 @@ func (c *Client) applyOpts(opts ...opt) {
 	if c.versionTracker == nil {
 		c.versionTracker = &InMemoryVersionTracker{}
 	}
+
+	if c.logger == nil {
+		logger := log.Logger.With().Str("client", "aptosstream").Logger()
+		c.logger = &logger
+	}
 }
 
-func (c *Client) GetTransaction(ctx context.Context, filter TransactionFilter) (chan *transaction.Transaction, error) {
+// TransactionStream wraps a stream of transactions and potential errors with cancellation support.
+// Use Get() to retrieve the next *transaction.Transaction or an error (io.EOF indicates end of stream).
+// Call Close() to cancel the stream; subsequent Get() calls will return the context error.
+type TransactionStream struct {
+	txCh   <-chan *transaction.Transaction
+	errCh  <-chan error
+	cancel context.CancelFunc
+}
+
+// Get returns the next transaction or an error. io.EOF indicates normal completion.
+// If the stream was canceled via Close(), Get returns the context error (context.Canceled).
+func (s *TransactionStream) Get() (*transaction.Transaction, error) {
+	select {
+	case tx, ok := <-s.txCh:
+		if ok {
+			return tx, nil
+		}
+		// txCh closed: read final error
+		err := <-s.errCh
+		if err != nil {
+			return nil, err
+		}
+		return nil, io.EOF
+	case err := <-s.errCh:
+		return nil, err
+	}
+}
+
+// Close cancels the underlying stream context. Pending or future Get() calls will return the context error.
+func (s *TransactionStream) Close() {
+	s.cancel()
+}
+
+// GetTransactionStream starts fetching transactions matching the provided filter and returns a TransactionStream.
+//
+// IMPORTANT: This function uses the provided VersionTracker to determine the starting version for the stream.
+// However, it does NOT automatically update the version tracker as transactions are received.
+// It is the caller's responsibility to process transactions and then call versionTracker.SetVersion()
+// to ensure at-least-once processing semantics and prevent data loss on client restart.
+//
+// Use Get() to receive transactions and errors, and Close() to cancel the stream at any time.
+func (c *Client) GetTransactionStream(ctx context.Context, filter TransactionFilter) (*TransactionStream, error) {
 	if c.outgoingHeader != nil {
 		ctx = metadata.NewOutgoingContext(ctx, c.outgoingHeader)
 	}
+	// Create cancellable context for the stream
+	ctx, cancel := context.WithCancel(ctx)
+	txCh := make(chan *transaction.Transaction, c.bufferSize)
+	errCh := make(chan error, 1)
 
-	result := make(chan *transaction.Transaction, c.bufferSize)
-
+	// Initialize FromVersion if not set
 	if filter.FromVersion == nil {
 		version, err := c.versionTracker.GetVersion()
 		if err != nil {
+			cancel()
 			return nil, err
 		}
 		if version > 0 {
@@ -89,38 +143,45 @@ func (c *Client) GetTransaction(ctx context.Context, filter TransactionFilter) (
 		}
 	}
 
+	// Open the gRPC stream
 	stream, err := c.aptosRawDataClient.GetTransactions(ctx, &v1.GetTransactionsRequest{
 		StartingVersion:   filter.FromVersion,
 		TransactionsCount: c.transactionsCount,
 		BatchSize:         c.batchSize,
 	})
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
 	go func() {
-		defer close(result)
+		defer close(txCh)
+		defer close(errCh)
 		for {
 			txns, err := stream.Recv()
 			if err != nil {
-				log.Printf("error receiving transactions: %v", err)
+				if err == io.EOF {
+					errCh <- nil
+				} else {
+					errCh <- err
+				}
 				return
 			}
-			var receivedVersion uint64
+
 			for _, tx := range txns.Transactions {
 				if filter.Filter == nil || filter.Filter.match(tx) {
-					result <- tx
+					select {
+					case txCh <- tx:
+					case <-ctx.Done():
+						errCh <- ctx.Err()
+						return
+					}
 				}
-				receivedVersion = tx.GetVersion()
-			}
-			if err := c.versionTracker.SetVersion(receivedVersion); err != nil {
-				log.Printf("error setting version: %v", err)
-				return
 			}
 		}
 	}()
 
-	return result, nil
+	return &TransactionStream{txCh: txCh, errCh: errCh, cancel: cancel}, nil
 }
 
 type opt func(*Client)
@@ -160,5 +221,11 @@ func WithBatchSize(batchSize uint64) opt {
 func WithBufferSize(bufferSize uint64) opt {
 	return func(c *Client) {
 		c.bufferSize = bufferSize
+	}
+}
+
+func WithLogger(logger *zerolog.Logger) opt {
+	return func(c *Client) {
+		c.logger = logger
 	}
 }

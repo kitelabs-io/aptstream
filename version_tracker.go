@@ -18,6 +18,7 @@ func (v *InMemoryVersionTracker) GetVersion() (uint64, error) {
 	return v.version, nil
 }
 
+// SetVersion updates the tracker's version, but only if the new version
 func (v *InMemoryVersionTracker) SetVersion(version uint64) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()

@@ -1,9 +1,9 @@
 package aptosstream
 
-// Default filter behavior: nil or empty filters match all transactions or events.
-// - Logical filters (And, Or) with no entries return true.
-// - Pointer-based filters with nil fields impose no criteria and accept all.
-// - Filters with nil sub-filters are treated as no-op (match all).
+// Filter behaviors:
+// - A nil filter for any field means that criterion is ignored (matches all).
+// - Logical 'And' with no sub-filters returns true.
+// - Logical 'Or' with no sub-filters returns false.
 
 import (
 	"strings"
@@ -55,14 +55,14 @@ type Or struct {
 	Filters []txnFilter
 }
 
-// if Filters is empty, it will return true
+// if Filters is empty, it will return false
 func (o *Or) match(tx *transaction.Transaction) bool {
 	for _, filter := range o.Filters {
 		if filter.match(tx) {
 			return true
 		}
 	}
-	return len(o.Filters) == 0
+	return false
 }
 
 // ----------------------------- Transaction Root Filter -----------------------------
@@ -143,14 +143,11 @@ func (e *EntryFunctionFilter) match(payload *transaction.EntryFunctionPayload) b
 
 // ----------------------------- Event Filter -----------------------------
 type EventFilter struct {
-	StructType *MoveStructTagFilter
-	// since filtering substring is expensive,
-	// we only filter DataSubstringFilter if StructType is not nil
+	StructType          *MoveStructTagFilter
 	DataSubstringFilter *string
 }
 
 func (e *EventFilter) match(tx *transaction.Transaction) bool {
-	// type check if txn is user transaction
 	userTransaction := tx.GetUser()
 	if userTransaction == nil {
 		// event filter is not applicable to non-user transactions
@@ -163,10 +160,12 @@ func (e *EventFilter) match(tx *transaction.Transaction) bool {
 	}
 
 	for _, event := range userTransaction.GetEvents() {
-		if e.StructType != nil {
-			if e.StructType.match(event.GetType().GetStruct()) {
-				return (e.DataSubstringFilter == nil || strings.Contains(event.GetData(), *e.DataSubstringFilter))
-			}
+		// If a filter is nil, it's a match for that part.
+		structMatches := e.StructType == nil || e.StructType.match(event.GetType().GetStruct())
+		dataMatches := e.DataSubstringFilter == nil || strings.Contains(event.GetData(), *e.DataSubstringFilter)
+
+		if structMatches && dataMatches {
+			return true
 		}
 	}
 
