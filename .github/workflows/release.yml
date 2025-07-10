@@ -1,0 +1,78 @@
+name: 'Release'
+
+permissions: write-all
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        type: string
+        required: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version_tag: ${{ steps.version_tag.outputs.value }}
+      build_date: ${{ steps.build_date.outputs.value }}
+    steps:
+      - name: Format version tag
+        shell: bash
+        id: version_tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.version }}
+        run: |
+          # Validate format (should include v prefix)
+          if [[ ! $INPUT_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must be in format vX.Y.Z (e.g., v1.0.0)"
+            exit 1
+          fi
+          echo "value=$INPUT_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build date
+        shell: bash
+        id: build_date
+        run: echo "value=$(date +%FT%T%z)" >> $GITHUB_OUTPUT
+
+  release:
+    needs:
+      - prepare
+    runs-on: ubuntu-latest
+    env:
+      VERSION_TAG: ${{ needs.prepare.outputs.version_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - name: Setup Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Create tag
+        run: |
+          # Check if tag already exists
+          if git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+            echo "Error: Tag $VERSION_TAG already exists"
+            exit 1
+          fi
+
+          # Create and push tag
+          git tag --annotate --message "aptos-stream $VERSION_TAG" "$VERSION_TAG"
+          git push origin "refs/tags/$VERSION_TAG"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ env.VERSION_TAG }}
+          prerelease: false
+          name: "Aptos Strream ${{ env.VERSION_TAG }}"
