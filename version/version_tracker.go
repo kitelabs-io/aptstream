@@ -1,4 +1,4 @@
-package aptosstream
+package version
 
 import "sync"
 

@@ -10,12 +10,13 @@
 package v1
 
 import (
-	timestamp "github.com/kitelabs-io/aptstream/grpc/aptos/util/timestamp"
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	timestamp "github.com/kitelabs-io/aptstream/grpc/aptos/util/timestamp"
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (

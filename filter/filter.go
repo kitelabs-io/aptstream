@@ -1,4 +1,4 @@
-package aptosstream
+package filter
 
 // Filter behaviors:
 // - A nil filter for any field means that criterion is ignored (matches all).
@@ -24,27 +24,28 @@ const (
 	TransactionTypeBlockEpilogue = 21
 )
 
-type txnFilter interface {
-	match(*transaction.Transaction) bool
+// Filter provides a predicate interface for filtering aptos transactions.
+type Filter interface {
+	Match(*transaction.Transaction) bool
 }
 
 // ----------------------------- Logical Filters -----------------------------
 type Not struct {
-	Filter txnFilter
+	Filter Filter
 }
 
-func (n *Not) match(tx *transaction.Transaction) bool {
-	return !n.Filter.match(tx)
+func (n *Not) Match(tx *transaction.Transaction) bool {
+	return !n.Filter.Match(tx)
 }
 
 type And struct {
-	Filters []txnFilter
+	Filters []Filter
 }
 
 // if Filters is empty, it will return true
-func (a *And) match(tx *transaction.Transaction) bool {
+func (a *And) Match(tx *transaction.Transaction) bool {
 	for _, filter := range a.Filters {
-		if !filter.match(tx) {
+		if !filter.Match(tx) {
 			return false
 		}
 	}
@@ -52,13 +53,13 @@ func (a *And) match(tx *transaction.Transaction) bool {
 }
 
 type Or struct {
-	Filters []txnFilter
+	Filters []Filter
 }
 
 // if Filters is empty, it will return false
-func (o *Or) match(tx *transaction.Transaction) bool {
+func (o *Or) Match(tx *transaction.Transaction) bool {
 	for _, filter := range o.Filters {
-		if filter.match(tx) {
+		if filter.Match(tx) {
 			return true
 		}
 	}
@@ -71,7 +72,7 @@ type TransactionRootFilter struct {
 	TxnType *TransactionType
 }
 
-func (t *TransactionRootFilter) match(tx *transaction.Transaction) bool {
+func (t *TransactionRootFilter) Match(tx *transaction.Transaction) bool {
 	if t.Success != nil && tx.GetInfo().GetSuccess() != *t.Success {
 		return false
 	}
@@ -87,7 +88,7 @@ type UserTransactionFilter struct {
 	PayloadFilter *UserTransactionPayloadFilter
 }
 
-func (u *UserTransactionFilter) match(tx *transaction.Transaction) bool {
+func (u *UserTransactionFilter) Match(tx *transaction.Transaction) bool {
 	// type check if txn is user transaction
 	userTransaction := tx.GetUser()
 	if userTransaction == nil {
@@ -98,7 +99,7 @@ func (u *UserTransactionFilter) match(tx *transaction.Transaction) bool {
 		return false
 	}
 	if u.PayloadFilter != nil {
-		return u.PayloadFilter.match(userTransaction.GetRequest().GetPayload())
+		return u.PayloadFilter.Match(userTransaction.GetRequest().GetPayload())
 	}
 	return true
 }
@@ -107,12 +108,12 @@ type UserTransactionPayloadFilter struct {
 	EntryFunctionFilter *EntryFunctionFilter
 }
 
-func (u *UserTransactionPayloadFilter) match(payload *transaction.TransactionPayload) bool {
+func (u *UserTransactionPayloadFilter) Match(payload *transaction.TransactionPayload) bool {
 	if payload == nil {
 		return false
 	}
 	if u.EntryFunctionFilter != nil {
-		return u.EntryFunctionFilter.match(payload.GetEntryFunctionPayload())
+		return u.EntryFunctionFilter.Match(payload.GetEntryFunctionPayload())
 	}
 	return true
 }
@@ -123,7 +124,7 @@ type EntryFunctionFilter struct {
 	Function   *string
 }
 
-func (e *EntryFunctionFilter) match(payload *transaction.EntryFunctionPayload) bool {
+func (e *EntryFunctionFilter) Match(payload *transaction.EntryFunctionPayload) bool {
 	// type check if payload is entry function payload
 	if payload == nil {
 		return false
@@ -149,7 +150,7 @@ type EventFilter struct {
 
 // match returns true if any of the events in the transaction match the filter criteria.
 // If both StructType and DataSubstringFilter are nil, it matches any transaction that has at least one event.
-func (e *EventFilter) match(tx *transaction.Transaction) bool {
+func (e *EventFilter) Match(tx *transaction.Transaction) bool {
 	userTransaction := tx.GetUser()
 	if userTransaction == nil {
 		// event filter is not applicable to non-user transactions
@@ -163,7 +164,7 @@ func (e *EventFilter) match(tx *transaction.Transaction) bool {
 
 	for _, event := range userTransaction.GetEvents() {
 		// If a filter is nil, it's a match for that part.
-		structMatches := e.StructType == nil || e.StructType.match(event.GetType().GetStruct())
+		structMatches := e.StructType == nil || e.StructType.Match(event.GetType().GetStruct())
 		dataMatches := e.DataSubstringFilter == nil || strings.Contains(event.GetData(), *e.DataSubstringFilter)
 
 		if structMatches && dataMatches {
@@ -180,7 +181,7 @@ type MoveStructTagFilter struct {
 	Name    *string
 }
 
-func (m *MoveStructTagFilter) match(event *transaction.MoveStructTag) bool {
+func (m *MoveStructTagFilter) Match(event *transaction.MoveStructTag) bool {
 	if event == nil {
 		return false
 	}

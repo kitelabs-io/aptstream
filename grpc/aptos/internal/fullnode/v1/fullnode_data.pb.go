@@ -10,13 +10,14 @@
 package v1
 
 import (
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
+
 	v11 "github.com/kitelabs-io/aptstream/grpc/aptos/indexer/v1"
 	v1 "github.com/kitelabs-io/aptstream/grpc/aptos/transaction/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
 )
 
 const (
