@@ -181,20 +181,20 @@ type MoveStructTagFilter struct {
 	Name    *string
 }
 
-func (m *MoveStructTagFilter) Match(event *transaction.MoveStructTag) bool {
-	if event == nil {
+func (m *MoveStructTagFilter) Match(structTag *transaction.MoveStructTag) bool {
+	if structTag == nil {
 		return false
 	}
 
-	if m.Address != nil && event.GetAddress() != *m.Address {
+	if m.Address != nil && structTag.GetAddress() != *m.Address {
 		return false
 	}
 
-	if m.Module != nil && event.GetModule() != *m.Module {
+	if m.Module != nil && structTag.GetModule() != *m.Module {
 		return false
 	}
 
-	if m.Name != nil && event.GetName() != *m.Name {
+	if m.Name != nil && structTag.GetName() != *m.Name {
 		return false
 	}
 
