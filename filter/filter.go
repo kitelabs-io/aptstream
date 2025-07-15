@@ -42,6 +42,11 @@ type And struct {
 	Filters []Filter
 }
 
+func (a *And) And(filter Filter) Filter {
+	a.Filters = append(a.Filters, filter)
+	return a
+}
+
 // if Filters is empty, it will return true
 func (a *And) Match(tx *transaction.Transaction) bool {
 	for _, filter := range a.Filters {
@@ -54,6 +59,11 @@ func (a *And) Match(tx *transaction.Transaction) bool {
 
 type Or struct {
 	Filters []Filter
+}
+
+func (o *Or) Or(filter Filter) Filter {
+	o.Filters = append(o.Filters, filter)
+	return o
 }
 
 // if Filters is empty, it will return false
