@@ -20,6 +20,10 @@ type StreamFilter struct {
 	// if FromVersion is not nil, it will start from the version specified
 	FromVersion *uint64
 
+	// RemoteFilter is a filter that can be applied on the server side
+	// to reduce the amount of data sent over the network.
+	RemoteFilter *filter.RemoteTransactionFilter
+
 	// if Filter is nil, it will return all transactions
 	Filter filter.Filter
 }
@@ -124,6 +128,7 @@ func (c *Client) GetTransactionStream(ctx context.Context, filter StreamFilter) 
 	grpcStream, err := c.aptosRawDataClient.GetTransactions(ctx, &v1.GetTransactionsRequest{
 		StartingVersion:   filter.FromVersion,
 		TransactionsCount: c.transactionsCount,
+		TransactionFilter: mapRemoteTransactionsFilter(filter.RemoteFilter),
 		BatchSize:         c.batchSize,
 	})
 	if err != nil {
