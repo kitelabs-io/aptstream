@@ -42,6 +42,11 @@ type And struct {
 	Filters []Filter
 }
 
+func (a *And) And(filter Filter) Filter {
+	a.Filters = append(a.Filters, filter)
+	return a
+}
+
 // if Filters is empty, it will return true
 func (a *And) Match(tx *transaction.Transaction) bool {
 	for _, filter := range a.Filters {
@@ -54,6 +59,11 @@ func (a *And) Match(tx *transaction.Transaction) bool {
 
 type Or struct {
 	Filters []Filter
+}
+
+func (o *Or) Or(filter Filter) Filter {
+	o.Filters = append(o.Filters, filter)
+	return o
 }
 
 // if Filters is empty, it will return false
@@ -181,20 +191,20 @@ type MoveStructTagFilter struct {
 	Name    *string
 }
 
-func (m *MoveStructTagFilter) Match(event *transaction.MoveStructTag) bool {
-	if event == nil {
+func (m *MoveStructTagFilter) Match(structTag *transaction.MoveStructTag) bool {
+	if structTag == nil {
 		return false
 	}
 
-	if m.Address != nil && event.GetAddress() != *m.Address {
+	if m.Address != nil && structTag.GetAddress() != *m.Address {
 		return false
 	}
 
-	if m.Module != nil && event.GetModule() != *m.Module {
+	if m.Module != nil && structTag.GetModule() != *m.Module {
 		return false
 	}
 
-	if m.Name != nil && event.GetName() != *m.Name {
+	if m.Name != nil && structTag.GetName() != *m.Name {
 		return false
 	}
 

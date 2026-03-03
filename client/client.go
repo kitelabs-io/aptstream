@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-type StreamConfig struct {
+type StreamFilter struct {
 	// if FromVersion is nil and versionTracker.GetVersion() == 0, it will start from the latest version
 	// if FromVersion is not nil, it will start from the version specified
 	FromVersion *uint64
@@ -99,7 +99,7 @@ func (c *Client) applyOpts(opts ...opt) {
 //
 // It is crucial to handle the returned error from Get(), which may indicate a stream
 // failure or a commit failure in AutoCommit mode.
-func (c *Client) GetTransactionStream(ctx context.Context, filter StreamConfig) (*stream.TransactionStream, error) {
+func (c *Client) GetTransactionStream(ctx context.Context, filter StreamFilter) (*stream.TransactionStream, error) {
 	if c.outgoingHeader != nil {
 		ctx = metadata.NewOutgoingContext(ctx, c.outgoingHeader)
 	}
