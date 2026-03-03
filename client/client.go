@@ -22,7 +22,7 @@ type StreamFilter struct {
 
 	// RemoteFilter is a filter that can be applied on the server side
 	// to reduce the amount of data sent over the network.
-	RemoteFilter *filter.RemoteTransactionFilter
+	RemoteFilter *filter.RemoteBooleanTransactionFilter
 
 	// if Filter is nil, it will return all transactions
 	Filter filter.Filter
@@ -128,7 +128,7 @@ func (c *Client) GetTransactionStream(ctx context.Context, filter StreamFilter) 
 	grpcStream, err := c.aptosRawDataClient.GetTransactions(ctx, &v1.GetTransactionsRequest{
 		StartingVersion:   filter.FromVersion,
 		TransactionsCount: c.transactionsCount,
-		TransactionFilter: mapRemoteTransactionsFilter(filter.RemoteFilter),
+		TransactionFilter: filter.RemoteFilter.ToRemoteTransactionsFilter(),
 		BatchSize:         c.batchSize,
 	})
 	if err != nil {
